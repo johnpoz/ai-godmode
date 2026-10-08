@@ -70,6 +70,12 @@ This can save your token usage and speed up everything you do by 75% or more.
 - **Run PHP is total control.** None of the guardrails apply to it. Leave it off
   unless you need it.
 
+## Works With AI Scratchpad
+
+AI Godmode gives your AI the keys to the site.
+[AI Scratchpad](https://github.com/johnpoz/ai-scratchpad) gives it a memory of
+what it did with them.
+
 ## Requirements
 
 - WordPress 6.9 or later
