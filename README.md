@@ -91,6 +91,11 @@ what it did with them.
 5. Allow the Tool Drawer to organize ALL of your MCP abilities.
 6. Send a "Thanks John P.!" to @johnpoz for making your life better.
 
+## Contributing
+
+Found a bug or have an idea? Open an issue or send a pull request on
+[GitHub](https://github.com/johnpoz/ai-godmode/issues).
+
 ## License
 
 GPLv2 or later. See [LICENSE](LICENSE).
