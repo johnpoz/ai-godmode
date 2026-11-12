@@ -11,10 +11,14 @@
  *                   here: the switches, the capability check, schema
  *                   validation and the audit intent record, all under the
  *                   inner ability's own name.
- *  godmode/wp-find  the same search over Easy MCP AI's own tools.
- *  godmode/wp-call  run an Easy MCP AI tool through Easy MCP's own composite
- *                   call entry point, so its token allowlist, per-tool
- *                   switches, approvals, audit and undo history all apply.
+ *  godmode/wp-find  the same search over the MCP server's own tools: Easy MCP
+ *                   AI's, or AI Engine's when the call comes through AI Engine.
+ *  godmode/wp-call  run one of those tools through the server's own call
+ *                   path: Easy MCP's composite call entry point (token
+ *                   allowlist, per-tool switches, approvals, audit and undo
+ *                   history), or AI Engine's own execute_tool() through
+ *                   \AIGodmode\Ai_Engine_Bridge (access level, read-only
+ *                   grants, approvals, undo journal and MCP Logs).
  *
  * find and wp-find are READ. call and wp-call are WRITE: a dispatcher cannot
  * promise to be harmless, so it carries the WRITE badge, writes its own intent
@@ -238,11 +242,17 @@ final class Call extends Base {
 }
 
 // ---------------------------------------------------------------------------
-// Easy MCP AI bridge: shared availability and registry access.
+// Server bridges: shared availability and registry access. wp-find and
+// wp-call are offered when Easy MCP AI or AI Engine is there to reach.
 // ---------------------------------------------------------------------------
 trait Easy_Mcp_Bridge {
-	/** Only offered when Easy MCP AI is active with the entry points this needs. */
+	/** Offered when Easy MCP AI or AI Engine is active with the entry points needed. */
 	public static function is_available(): bool {
+		return self::easy_mcp_available() || \AIGodmode\Ai_Engine_Bridge::is_supported();
+	}
+
+	/** Easy MCP AI is active with the entry points this needs. */
+	public static function easy_mcp_available(): bool {
 		return class_exists( '\\Easy_MCP_AI\\Plugin' )
 			&& method_exists( '\\Easy_MCP_AI\\Plugin', 'instance' )
 			&& method_exists( '\\Easy_MCP_AI\\Plugin', 'get_tool_registry' )
@@ -290,7 +300,7 @@ final class Wp_Find extends Base {
 		return self::make(
 			'drawer',
 			'Find Site Tool',
-			'The listed site tools are a partial set. Search every Easy MCP AI tool on this site, listed or not, by words (for example "menu item", "comment approve", "woocommerce order", "theme mod"). Returns name, purpose and the input schema to pass to godmode/wp-call. An empty query lists the whole drawer by group. Search here before saying something cannot be done.',
+			'The listed site tools are a partial set. Search every tool of the MCP server you are connected through (Easy MCP AI or AI Engine), listed or not, by words (for example "menu item", "comment approve", "woocommerce order", "theme mod"). Returns name, purpose and the input schema to pass to godmode/wp-call. An empty query lists the whole drawer by group. Search here before saying something cannot be done.',
 			self::obj(
 				array(
 					'query' => self::str( 200 ),
@@ -309,22 +319,35 @@ final class Wp_Find extends Base {
 	}
 
 	public function execute( $input ) {
-		$query = trim( (string) ( $input['query'] ?? '' ) );
-		$defs  = self::site_tool_definitions();
-		if ( empty( $defs ) ) {
-			return self::err( 'godmode_easy_mcp_unavailable', 'Easy MCP AI did not return a tool list. It may be paused or inactive.', 503 );
-		}
+		$query   = trim( (string) ( $input['query'] ?? '' ) );
 		$plugin  = \AIGodmode\Plugin::instance();
 		$surface = new \AIGodmode\Surface( $plugin->settings, $plugin->registrar );
+		$aie     = \AIGodmode\Ai_Engine_Bridge::in_call();
+		if ( $aie ) {
+			$defs = (array) \AIGodmode\Ai_Engine_Bridge::tools();
+			$skip = $surface->ai_engine_map(); // Abilities: godmode/find and godmode/call reach those.
+			if ( empty( $defs ) ) {
+				return self::err( 'godmode_ai_engine_unavailable', 'AI Engine did not return a tool list.', 503 );
+			}
+		} else {
+			$defs = self::easy_mcp_available() ? self::site_tool_definitions() : array();
+			$skip = array();
+			if ( empty( $defs ) ) {
+				return self::err( 'godmode_easy_mcp_unavailable', 'Easy MCP AI did not return a tool list. It may be paused or inactive, or this call did not come through Easy MCP AI or AI Engine.', 503 );
+			}
+		}
 		$always  = $surface->always_loaded();
 		$matches = array();
 		$names   = array();
 		foreach ( $defs as $def ) {
 			$name = (string) ( $def['name'] ?? '' );
-			if ( '' === $name || \AIGodmode\Surface::is_godmode_tool( $name ) ) {
-				continue; // This plugin's own abilities belong to godmode/find.
+			if ( '' === $name || \AIGodmode\Surface::is_godmode_tool( $name ) || isset( $skip[ $name ] ) ) {
+				continue; // Abilities (this plugin's and others') belong to godmode/find.
 			}
-			$listed  = $surface->is_loaded( $name, $always );
+			// Under AI Engine its own tools are hidden only while wp-call can
+			// reach them (switched on, and not a drafts-only site).
+			$aie_doors = $surface->is_compact() && $plugin->settings->is_active( 'godmode/wp-call' ) && ! \AIGodmode\Ai_Engine_Bridge::drafts_only();
+			$listed    = $aie ? ( ! $aie_doors || isset( $always[ $name ] ) ) : $surface->is_loaded( $name, $always );
 			$names[] = $name;
 			if ( '' === $query ) {
 				continue;
@@ -368,7 +391,7 @@ final class Wp_Call extends Base {
 		$def = self::make(
 			'drawer',
 			'Call Site Tool',
-			'Run any Easy MCP AI tool on this site by name, for example "wp_update_menu_item" with its arguments. Use godmode/wp-find first for the name and schema. The tool runs through Easy MCP AI exactly as a direct call would: its token allowlist, per-tool switches, approvals, audit and undo history all apply. Not for tools already listed; call those directly.',
+			'Run any tool of the MCP server you are connected through (Easy MCP AI or AI Engine) by name, for example "wp_update_menu_item" with its arguments. Use godmode/wp-find first for the name and schema. The tool runs through that server exactly as a direct call would: its access checks, approvals, audit and undo history all apply. Not for tools already listed; call those directly.',
 			self::obj(
 				array(
 					'name'      => self::str( 64, 3 ),
@@ -396,13 +419,19 @@ final class Wp_Call extends Base {
 		if ( \AIGodmode\Surface::is_godmode_tool( $name ) ) {
 			return self::err( 'godmode_wrong_door', 'That is an AI Godmode ability. Use godmode/call with the ability name (for example godmode/cron-list).', 400 );
 		}
+		if ( \AIGodmode\Ai_Engine_Bridge::in_call() ) {
+			return $this->call_ai_engine( $name, $args );
+		}
+		if ( ! self::easy_mcp_available() ) {
+			return self::err( 'godmode_no_server_context', 'godmode/wp-call only works when it is itself called through an Easy MCP AI or AI Engine connector.', 409 );
+		}
 		try {
 			$answer = \Easy_MCP_AI\MCP\Server::call_as_current_caller( $name, $args );
 		} catch ( \Throwable $e ) {
 			return self::err( 'godmode_easy_mcp_failed', 'Easy MCP AI refused the call: ' . $e->getMessage(), 500 );
 		}
 		if ( null === $answer ) {
-			return self::err( 'godmode_no_easy_mcp_context', 'godmode/wp-call only works when it is itself called through an Easy MCP AI connector; there is no Easy MCP call to run inside.', 409 );
+			return self::err( 'godmode_no_easy_mcp_context', 'godmode/wp-call only works when it is itself called through an Easy MCP AI or AI Engine connector; there is no server call to run inside.', 409 );
 		}
 		$response = is_array( $answer ) && isset( $answer['response'] ) ? $answer['response'] : $answer;
 		if ( is_array( $response ) && isset( $response['error'] ) ) {
@@ -417,6 +446,41 @@ final class Wp_Call extends Base {
 			return array( 'name' => $name, 'result' => $result['structuredContent'] );
 		}
 		return array( 'name' => $name, 'result' => is_array( $result ) ? self::text_of( $result ) : $result );
+	}
+
+	/**
+	 * Run one of AI Engine's own tools through AI Engine's own call path.
+	 * Abilities are refused here: godmode/call runs them by ability name.
+	 */
+	private function call_ai_engine( string $name, array $args ) {
+		$plugin = \AIGodmode\Plugin::instance();
+		$map    = ( new \AIGodmode\Surface( $plugin->settings, $plugin->registrar ) )->ai_engine_map();
+		if ( isset( $map[ $name ] ) ) {
+			return self::err( 'godmode_wrong_door', sprintf( '"%s" is an ability, not one of AI Engine\'s own tools. Use godmode/call with its ability name.', $name ), 400 );
+		}
+		$reply = \AIGodmode\Ai_Engine_Bridge::call( $name, $args );
+		if ( null === $reply ) {
+			return self::err( 'godmode_ai_engine_failed', 'AI Engine did not answer the call.', 500 );
+		}
+		if ( isset( $reply['error'] ) ) {
+			$msg = is_array( $reply['error'] ) ? (string) ( $reply['error']['message'] ?? 'unknown error' ) : (string) $reply['error'];
+			return self::err( 'godmode_ai_engine_error', sprintf( 'AI Engine refused "%s": %s', $name, $msg ), 400 );
+		}
+		$result = isset( $reply['result'] ) && is_array( $reply['result'] ) ? $reply['result'] : array();
+		if ( ! empty( $result['isError'] ) ) {
+			return self::err( 'godmode_site_tool_error', sprintf( 'Tool "%s" reported an error: %s', $name, self::text_of( $result ) ), 400 );
+		}
+		if ( array_key_exists( 'structuredContent', $result ) ) {
+			return array( 'name' => $name, 'result' => $result['structuredContent'] );
+		}
+		if ( array_key_exists( 'data', $result ) ) {
+			return array( 'name' => $name, 'result' => $result['data'] );
+		}
+		// Most of AI Engine's tools answer with JSON as text; hand it back
+		// decoded so it is not encoded a second time.
+		$text    = self::text_of( $result );
+		$decoded = json_decode( $text, true );
+		return array( 'name' => $name, 'result' => is_array( $decoded ) ? $decoded : $text );
 	}
 
 	/** Join the text parts of an MCP tool result. */

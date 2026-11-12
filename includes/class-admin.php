@@ -112,7 +112,7 @@ final class Admin {
 			case 'drawer_save':
 				$tab     = 'drawer';
 				$surface = new Surface( $this->settings, $this->registrar );
-				$valid   = static function ( $n ) { return is_string( $n ) && 1 === preg_match( '/^[a-z0-9_]{1,200}$/', $n ); };
+				$valid   = static function ( $n ) { return is_string( $n ) && 1 === preg_match( '/^[a-z0-9_-]{1,200}$/', $n ); };
 				$compact = ! empty( $_POST['godmode_compact'] );
 				$mode    = ! empty( $_POST['godmode_foreign_drawer'] ) ? 'drawer' : 'listed';
 				$posted  = isset( $_POST['godmode_always'] ) && is_array( $_POST['godmode_always'] ) ? array_map( 'sanitize_text_field', wp_unslash( $_POST['godmode_always'] ) ) : array();
@@ -392,11 +392,12 @@ final class Admin {
 			$sections[] = array( 'key' => 'godmode-' . $family, 'label' => 'AI Godmode: ' . $family, 'kind' => 'godmode', 'rows' => $rows );
 		}
 
-		if ( ! Abilities\Wp_Find::is_available() ) {
+		if ( ! Abilities\Wp_Find::easy_mcp_available() ) {
 			// No Easy MCP registry to read (an AI Engine or MCP Adapter site):
-			// list other plugins' published abilities straight from the
-			// Abilities API, so their ticks work on any server.
-			return array_merge( $sections, $this->foreign_sections_from_abilities() );
+			// list AI Engine's own tools when it is there, and other plugins'
+			// published abilities straight from the Abilities API, so their
+			// ticks work on any server.
+			return array_merge( $sections, $this->ai_engine_sections( array() ), $this->foreign_sections_from_abilities() );
 		}
 		try {
 			$registry = \Easy_MCP_AI\Plugin::instance()->get_tool_registry();
@@ -442,14 +443,63 @@ final class Admin {
 			}
 		}
 		ksort( $site );
+		$seen = array();
 		foreach ( $site as $group => $rows ) {
 			usort( $rows, static function ( $a, $b ) { return strcmp( $a['tool'], $b['tool'] ); } );
 			$sections[] = array( 'key' => 'site-' . $group, 'label' => 'Site tools: ' . $group, 'kind' => 'site', 'rows' => $rows );
+			foreach ( $rows as $r ) {
+				$seen[ $r['tool'] ] = true;
+			}
 		}
+		// AI Engine on the same site: its own tools, minus names Easy MCP
+		// shares (one tick covers both servers).
+		$sections = array_merge( $sections, $this->ai_engine_sections( $seen ) );
 		uasort( $foreign, static function ( $a, $b ) { return strcasecmp( $a['label'], $b['label'] ); } );
 		foreach ( $foreign as $key => $f ) {
 			usort( $f['rows'], static function ( $a, $b ) { return strcmp( $a['tool'], $b['tool'] ); } );
 			$sections[] = array( 'key' => 'plugin-' . $key, 'label' => 'Plugin: ' . $f['label'], 'kind' => 'foreign', 'rows' => $f['rows'] );
+		}
+		return $sections;
+	}
+
+	/**
+	 * AI Engine's own MCP tools, one section per group, read from its
+	 * mwai_mcp_tools filter the way its own settings screen does. Abilities
+	 * are left out (they have their own sections) and so are names already
+	 * shown for Easy MCP AI.
+	 *
+	 * @param array<string,bool> $seen Tool names already on the tab.
+	 * @return array<int,array{key:string,label:string,kind:string,rows:array}>
+	 */
+	private function ai_engine_sections( array $seen ): array {
+		if ( ! Ai_Engine_Bridge::is_supported() || ! has_filter( 'mwai_mcp_tools' ) ) {
+			return array();
+		}
+		// AI Engine adds these three itself, outside the filter.
+		$defs = array(
+			array( 'name' => 'mcp_ping', 'description' => 'Simple connectivity check.' ),
+			array( 'name' => 'mcp_list_changes', 'description' => 'List the recent changes made on this site through MCP.' ),
+			array( 'name' => 'mcp_undo_change', 'description' => 'Undo a change made through MCP.' ),
+		);
+		try {
+			$defs = array_merge( $defs, (array) apply_filters( 'mwai_mcp_tools', array() ) );
+		} catch ( \Throwable $e ) {
+			return array();
+		}
+		$groups = array();
+		foreach ( $defs as $def ) {
+			$name = is_array( $def ) ? (string) ( $def['name'] ?? '' ) : '';
+			if ( '' === $name || isset( $seen[ $name ] ) || 'ability' === ( $def['source'] ?? '' ) || Surface::is_godmode_tool( $name ) ) {
+				continue;
+			}
+			$seen[ $name ] = true;
+			$groups[ Surface::site_group( $name ) ][] = array( 'tool' => $name, 'desc' => (string) ( $def['description'] ?? '' ), 'door' => false );
+		}
+		ksort( $groups );
+		$sections = array();
+		foreach ( $groups as $group => $rows ) {
+			usort( $rows, static function ( $a, $b ) { return strcmp( $a['tool'], $b['tool'] ); } );
+			$sections[] = array( 'key' => 'aie-' . $group, 'label' => 'AI Engine: ' . $group, 'kind' => 'site', 'rows' => $rows );
 		}
 		return $sections;
 	}
@@ -514,7 +564,7 @@ final class Admin {
 		$hidden   = $surface->hidden();
 		$mode     = $surface->foreign_mode();
 		$post_url = admin_url( 'admin-post.php' );
-		$easy_mcp = Abilities\Wp_Find::is_available();
+		$easy_mcp = Abilities\Wp_Find::easy_mcp_available();
 		$sections = $this->drawer_sections();
 
 		$listed_count = 0;
@@ -559,7 +609,7 @@ final class Admin {
 			<?php endif; ?>
 		</p>
 		<?php if ( ! $easy_mcp ) : ?>
-			<p class="godmode-lede godmode-drawer-no-easymcp"><?php esc_html_e( 'Easy MCP AI is not active, so this tab lists this plugin\'s abilities and the abilities other plugins publish. With AI Engine, the MCP server\'s own tools always stay listed, because nothing in the drawer can reach them; wp-find and wp-call are left out of its list because they only work through Easy MCP AI.', 'ai-godmode' ); ?></p>
+			<p class="godmode-lede godmode-drawer-no-easymcp"><?php esc_html_e( 'Easy MCP AI is not active, so this tab lists this plugin\'s abilities, AI Engine\'s own tools when AI Engine is active, and the abilities other plugins publish. Under AI Engine, wp-find and wp-call reach its unticked tools; if wp-call is switched off or AI Engine is set to drafts only, every AI Engine tool stays listed.', 'ai-godmode' ); ?></p>
 		<?php endif; ?>
 
 		<form method="post" action="<?php echo esc_url( $post_url ); ?>" style="margin-top:14px" id="godmode-drawer-form">

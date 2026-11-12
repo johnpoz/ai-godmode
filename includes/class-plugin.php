@@ -46,6 +46,7 @@ final class Plugin {
 		}
 		( new Mcp_Bridge( $this->settings, $this->registrar ) )->hooks();
 		( new Surface( $this->settings, $this->registrar ) )->hooks();
+		Ai_Engine_Bridge::hooks();
 		if ( is_admin() ) {
 			( new Notices( $this->settings ) )->hooks();
 		}

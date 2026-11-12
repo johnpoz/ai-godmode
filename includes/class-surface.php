@@ -9,7 +9,8 @@
  * set, and the rest sit in a drawer: still registered, still switched and
  * audited exactly as before, reachable through godmode/find (what is in the
  * drawer, with schemas) and godmode/call (run one by name), and for Easy MCP
- * AI's own tools through godmode/wp-find and godmode/wp-call.
+ * AI's own tools through godmode/wp-find and godmode/wp-call. Under AI Engine
+ * the same two doors reach AI Engine's own tools (class-ai-engine-bridge.php).
  *
  * How hiding works. Easy MCP AI serves its MCP endpoint as a normal WordPress
  * REST route, so the tools/list reply passes through core's rest_post_dispatch
@@ -202,6 +203,17 @@ final class Surface {
 			'wp_get_site_settings',
 			'wp_history_list',
 			'wp_rest_read',
+			// AI Engine's own everyday tools. wp_create_post, wp_update_post,
+			// wp_get_post_meta and wp_update_post_meta above share Easy MCP's
+			// names and cover both servers. Only names Easy MCP AI does not
+			// also use are added here (AI Engine's wp_get_post, wp_get_media
+			// and wp_upload_media share names with Easy MCP tools that are not
+			// in its defaults, so ticking them would grow Easy MCP's list too).
+			'mcp_ping',
+			'mcp_list_changes',
+			'mcp_undo_change',
+			'wp_get_posts',
+			'wp_alter_post',
 		);
 	}
 
@@ -389,10 +401,13 @@ final class Surface {
 	 * the drawer index into the find tools' descriptions.
 	 *
 	 * Under AI Engine every name is first translated to its canonical (Easy
-	 * MCP) form, so the same ticks apply on either server. Two differences
-	 * there: AI Engine's own tools always stay listed, because no door can
-	 * reach them once hidden; and wp-find and wp-call are dropped, because they
-	 * only work inside an Easy MCP call and would only refuse.
+	 * MCP) form, so the same ticks apply on either server. AI Engine's own
+	 * tools follow the same ticks as Easy MCP's, but only while the listing
+	 * itself carries godmode/wp-call and AI Engine's server can be reached
+	 * (Ai_Engine_Bridge): that is the door to them once hidden. Without it
+	 * (wp-call switched off, a read-only connection, an AI Engine this plugin
+	 * does not recognise) they all stay listed, as in 0.8.5, and wp-find and
+	 * wp-call are dropped because they would only refuse.
 	 *
 	 * @param array  $tools   Tool definitions as the client would receive them.
 	 * @param string $dialect Naming the server uses (DIALECT_* constants).
@@ -403,9 +418,10 @@ final class Surface {
 		$hid_map = $this->hidden();
 		$aie     = self::DIALECT_AI_ENGINE === $dialect;
 		$map     = $aie ? $this->ai_engine_map() : array();
+		$doors   = $aie && $this->ai_engine_doors_ready( $tools, $map );
 		$kept    = array();
 		$canon   = array();
-		$hidden  = array( 'godmode' => array(), 'site' => array() );
+		$hidden  = array( 'godmode' => array(), 'site' => array(), 'engine' => array() );
 		foreach ( $tools as $tool ) {
 			$raw = isset( $tool['name'] ) ? (string) $tool['name'] : '';
 			if ( $aie && '' !== $raw ) {
@@ -415,12 +431,17 @@ final class Surface {
 					// Another server on this route that already uses Easy MCP style names.
 					$name = $raw;
 				} else {
-					// One of AI Engine's own tools: no door reaches it, so it stays.
-					$kept[]  = $tool;
-					$canon[] = $raw;
+					// One of AI Engine's own tools. Ticks apply only when wp-call
+					// can reach it once hidden.
+					if ( ! $doors || isset( $always[ $raw ] ) || ! $this->is_compact() ) {
+						$kept[]  = $tool;
+						$canon[] = $raw;
+					} else {
+						$hidden['engine'][] = $raw;
+					}
 					continue;
 				}
-				if ( self::GODMODE_PREFIX . 'wp_find' === $name || self::GODMODE_PREFIX . 'wp_call' === $name ) {
+				if ( ! $doors && ( self::GODMODE_PREFIX . 'wp_find' === $name || self::GODMODE_PREFIX . 'wp_call' === $name ) ) {
 					continue;
 				}
 			} else {
@@ -442,8 +463,8 @@ final class Surface {
 			if ( self::GODMODE_PREFIX . 'find' === $name ) {
 				$index = self::index( $hidden['godmode'], 'godmode' );
 				if ( $aie && ! empty( $hidden['site'] ) ) {
-					// No wp-find under AI Engine, so other plugins' hidden abilities
-					// are named here by ability name, which godmode/call takes.
+					// Other plugins' abilities are named here by ability name,
+					// which godmode/call takes; wp-call is for AI Engine's own tools.
 					$names = array();
 					foreach ( $hidden['site'] as $h ) {
 						foreach ( $this->ability_for_tool[ $h ] ?? array( $h ) as $ability_name ) {
@@ -456,10 +477,38 @@ final class Surface {
 				}
 				$kept[ $i ]['description'] = self::with_index( (string) ( $tool['description'] ?? '' ), $index );
 			} elseif ( self::GODMODE_PREFIX . 'wp_find' === $name ) {
-				$kept[ $i ]['description'] = self::with_index( (string) ( $tool['description'] ?? '' ), self::index( $hidden['site'], 'site' ) );
+				$site = $aie ? $hidden['engine'] : $hidden['site'];
+				$kept[ $i ]['description'] = self::with_index( (string) ( $tool['description'] ?? '' ), self::index( $site, 'site' ) );
 			}
 		}
 		return array_values( $kept );
+	}
+
+	/**
+	 * Whether AI Engine's own tools may go in the drawer for this listing:
+	 * godmode/wp-call is in it (so switched on, published, and allowed for
+	 * this connection) and the bridge recognises AI Engine's server.
+	 *
+	 * @param array                $tools The listing, AI Engine names.
+	 * @param array<string,string> $map   AI Engine name to canonical name.
+	 */
+	private function ai_engine_doors_ready( array $tools, array $map ): bool {
+		if ( ! Ai_Engine_Bridge::is_supported() ) {
+			return false;
+		}
+		// On a drafts-only AI Engine site, AI Engine refuses wp-call itself (it
+		// counts as a write that is not draft-safe), so nothing hidden could be
+		// reached. Keep everything listed there.
+		if ( Ai_Engine_Bridge::drafts_only() ) {
+			return false;
+		}
+		foreach ( $tools as $tool ) {
+			$raw = isset( $tool['name'] ) ? (string) $tool['name'] : '';
+			if ( '' !== $raw && self::GODMODE_PREFIX . 'wp_call' === ( $map[ $raw ] ?? $raw ) ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
