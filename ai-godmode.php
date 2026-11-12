@@ -3,7 +3,7 @@
  * Plugin Name: AI Godmode
  * Plugin URI: https://github.com/johnpoz/ai-godmode
  * Description: Grants server-administrator abilities to AI agents through the WordPress Abilities API. Every ability ships switched off. Arm it deliberately.
- * Version: 0.8.4
+ * Version: 0.8.5
  * Requires at least: 6.9
  * Requires PHP: 8.0
  * Author: John Pozadzides
@@ -24,7 +24,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 // ---------------------------------------------------------------------------
 // Section: Constants.
 // ---------------------------------------------------------------------------
-define( 'GODMODE_VERSION', '0.8.4' );
+define( 'GODMODE_VERSION', '0.8.5' );
 define( 'GODMODE_FILE', __FILE__ );
 define( 'GODMODE_DIR', plugin_dir_path( __FILE__ ) );
 define( 'GODMODE_BASENAME', plugin_basename( __FILE__ ) );

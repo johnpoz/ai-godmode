@@ -13,7 +13,8 @@
  *
  * How hiding works. Easy MCP AI serves its MCP endpoint as a normal WordPress
  * REST route, so the tools/list reply passes through core's rest_post_dispatch
- * filter. This class removes drawer tools from that reply and nothing else:
+ * filter. AI Engine (Meow Apps) does the same on /mcp/v1/, so the drawer works
+ * there too; see the AI Engine section below for how its tool names differ. This class removes drawer tools from that reply and nothing else:
  * a tools/call for a drawer tool still runs through Easy MCP's complete
  * pipeline (token allowlist, per-tool switches, approvals, its audit and undo
  * history), because that pipeline never consults the listing. Nothing in Easy
@@ -52,8 +53,26 @@ final class Surface {
 	public const GODMODE_PREFIX   = 'wp_ability_godmode_';
 	public const CORE_ABILITIES   = '/wp-abilities/v1/abilities';
 
+	/** AI Engine's MCP namespace: /mcp/v1/http, or /mcp/v1/{token} for URL-token clients. */
+	public const AI_ENGINE_ROUTE  = '/mcp/v1/';
+
+	/** Which naming a tools/list reply uses. */
+	public const DIALECT_EASY_MCP  = 'easy-mcp';
+	public const DIALECT_AI_ENGINE = 'ai-engine';
+
 	private Settings $settings;
 	private Registrar $registrar;
+
+	/** AI Engine tool name to canonical tool name, built once per request. */
+	private ?array $ai_engine_map = null;
+
+	/**
+	 * Canonical tool name to ability names, filled with the map above. A list,
+	 * because two abilities can share a canonical name (a/b-c and a-b/c).
+	 *
+	 * @var array<string,string[]>
+	 */
+	private array $ability_for_tool = array();
 
 	public function __construct( Settings $settings, Registrar $registrar ) {
 		$this->settings  = $settings;
@@ -229,6 +248,65 @@ final class Surface {
 	}
 
 	// -----------------------------------------------------------------------
+	// Section: AI Engine naming. AI Engine (Meow Apps, 3.8.3 and later) serves
+	// Abilities API abilities as MCP tools named after the ability with every
+	// character outside [a-zA-Z0-9_-] turned into an underscore:
+	// godmode/run-php becomes godmode_run-php, not Easy MCP's
+	// wp_ability_godmode_run_php. Every setting on the Tool Drawer tab is stored
+	// under Easy MCP's names (the canonical names), so an AI Engine listing is
+	// translated to canonical names before any rule is applied.
+	// -----------------------------------------------------------------------
+
+	/**
+	 * AI Engine's tool name for an ability. Mirrors
+	 * Meow_MWAI_Labs_MCP_Abilities::tool_name() in AI Engine 3.9.3, including
+	 * its hash suffix for names over 64 characters.
+	 */
+	public static function ai_engine_tool_name( string $ability ): string {
+		$name = (string) preg_replace( '/[^a-zA-Z0-9_-]/', '_', $ability );
+		if ( strlen( $name ) <= 64 ) {
+			return $name;
+		}
+		return substr( $name, 0, 57 ) . '_' . substr( md5( $ability ), 0, 6 );
+	}
+
+	/** True for AI Engine's MCP routes. */
+	public static function is_ai_engine_route( string $route ): bool {
+		return 0 === strpos( $route, self::AI_ENGINE_ROUTE );
+	}
+
+	/**
+	 * AI Engine tool name to canonical name, for every registered ability.
+	 * Names AI Engine gave its own tools are not in the map.
+	 *
+	 * @return array<string,string>
+	 */
+	public function ai_engine_map(): array {
+		if ( null !== $this->ai_engine_map ) {
+			return $this->ai_engine_map;
+		}
+		$map = array();
+		if ( function_exists( 'wp_get_abilities' ) ) {
+			foreach ( (array) wp_get_abilities() as $key => $ability ) {
+				$name = is_object( $ability ) && method_exists( $ability, 'get_name' ) ? (string) $ability->get_name() : (string) $key;
+				if ( '' !== $name ) {
+					$tool = self::tool_name_for_ability( $name );
+					$map[ self::ai_engine_tool_name( $name ) ] = $tool;
+					$this->ability_for_tool[ $tool ][]        = $name;
+				}
+			}
+		}
+		$this->ai_engine_map = $map;
+		return $map;
+	}
+
+	/** Forget the map, for the harness and for a request that registers abilities late. */
+	public function reset_ai_engine_map(): void {
+		$this->ai_engine_map    = null;
+		$this->ability_for_tool = array();
+	}
+
+	// -----------------------------------------------------------------------
 	// Section: The listing filter. Runs on every REST response; does nothing
 	// unless the route is Easy MCP's MCP endpoint or core's abilities list.
 	// -----------------------------------------------------------------------
@@ -243,7 +321,8 @@ final class Surface {
 		// the route. Nothing else on a WordPress site answers in that shape.
 		$data = $result->get_data();
 		if ( self::looks_like_jsonrpc( $data ) ) {
-			$new = $this->prune_mcp_payload( $data );
+			$dialect = self::is_ai_engine_route( $route ) ? self::DIALECT_AI_ENGINE : self::DIALECT_EASY_MCP;
+			$new     = $this->prune_mcp_payload( $data, $dialect );
 			if ( $new !== $data ) {
 				$result->set_data( $new );
 			}
@@ -281,23 +360,24 @@ final class Surface {
 	 * Prune a JSON-RPC payload, or a batch of them. Only a tools/list reply
 	 * has result.tools; everything else is returned untouched.
 	 *
-	 * @param mixed $data Decoded response body.
+	 * @param mixed  $data    Decoded response body.
+	 * @param string $dialect Naming the server uses (DIALECT_* constants).
 	 * @return mixed
 	 */
-	public function prune_mcp_payload( $data ) {
+	public function prune_mcp_payload( $data, string $dialect = self::DIALECT_EASY_MCP ) {
 		if ( ! is_array( $data ) ) {
 			return $data;
 		}
 		// Easy MCP encodes an empty result as an object, so look before indexing.
 		if ( isset( $data['result'] ) && is_array( $data['result'] ) && isset( $data['result']['tools'] ) && is_array( $data['result']['tools'] ) ) {
-			$data['result']['tools'] = $this->prune_tools( $data['result']['tools'] );
+			$data['result']['tools'] = $this->prune_tools( $data['result']['tools'], $dialect );
 			return $data;
 		}
 		// A batch is a list of replies.
 		if ( ! empty( $data ) && array_keys( $data ) === range( 0, count( $data ) - 1 ) ) {
 			foreach ( $data as $i => $reply ) {
 				if ( is_array( $reply ) && isset( $reply['result'] ) && is_array( $reply['result'] ) && isset( $reply['result']['tools'] ) ) {
-					$data[ $i ] = $this->prune_mcp_payload( $reply );
+					$data[ $i ] = $this->prune_mcp_payload( $reply, $dialect );
 				}
 			}
 		}
@@ -308,18 +388,47 @@ final class Surface {
 	 * The actual pruning: keep always-loaded tools, drop the rest, then write
 	 * the drawer index into the find tools' descriptions.
 	 *
-	 * @param array $tools Tool definitions as the client would receive them.
+	 * Under AI Engine every name is first translated to its canonical (Easy
+	 * MCP) form, so the same ticks apply on either server. Two differences
+	 * there: AI Engine's own tools always stay listed, because no door can
+	 * reach them once hidden; and wp-find and wp-call are dropped, because they
+	 * only work inside an Easy MCP call and would only refuse.
+	 *
+	 * @param array  $tools   Tool definitions as the client would receive them.
+	 * @param string $dialect Naming the server uses (DIALECT_* constants).
 	 * @return array
 	 */
-	public function prune_tools( array $tools ): array {
+	public function prune_tools( array $tools, string $dialect = self::DIALECT_EASY_MCP ): array {
 		$always  = $this->always_loaded();
 		$hid_map = $this->hidden();
+		$aie     = self::DIALECT_AI_ENGINE === $dialect;
+		$map     = $aie ? $this->ai_engine_map() : array();
 		$kept    = array();
+		$canon   = array();
 		$hidden  = array( 'godmode' => array(), 'site' => array() );
 		foreach ( $tools as $tool ) {
-			$name = isset( $tool['name'] ) ? (string) $tool['name'] : '';
+			$raw = isset( $tool['name'] ) ? (string) $tool['name'] : '';
+			if ( $aie && '' !== $raw ) {
+				if ( isset( $map[ $raw ] ) ) {
+					$name = $map[ $raw ];
+				} elseif ( self::is_godmode_tool( $raw ) || self::is_foreign_ability_tool( $raw ) ) {
+					// Another server on this route that already uses Easy MCP style names.
+					$name = $raw;
+				} else {
+					// One of AI Engine's own tools: no door reaches it, so it stays.
+					$kept[]  = $tool;
+					$canon[] = $raw;
+					continue;
+				}
+				if ( self::GODMODE_PREFIX . 'wp_find' === $name || self::GODMODE_PREFIX . 'wp_call' === $name ) {
+					continue;
+				}
+			} else {
+				$name = $raw;
+			}
 			if ( '' === $name || $this->is_loaded( $name, $always, $hid_map ) ) {
-				$kept[] = $tool;
+				$kept[]  = $tool;
+				$canon[] = $name;
 				continue;
 			}
 			if ( self::is_godmode_tool( $name ) ) {
@@ -329,9 +438,23 @@ final class Surface {
 			}
 		}
 		foreach ( $kept as $i => $tool ) {
-			$name = (string) ( $tool['name'] ?? '' );
+			$name = (string) ( $canon[ $i ] ?? '' );
 			if ( self::GODMODE_PREFIX . 'find' === $name ) {
-				$kept[ $i ]['description'] = self::with_index( (string) ( $tool['description'] ?? '' ), self::index( $hidden['godmode'], 'godmode' ) );
+				$index = self::index( $hidden['godmode'], 'godmode' );
+				if ( $aie && ! empty( $hidden['site'] ) ) {
+					// No wp-find under AI Engine, so other plugins' hidden abilities
+					// are named here by ability name, which godmode/call takes.
+					$names = array();
+					foreach ( $hidden['site'] as $h ) {
+						foreach ( $this->ability_for_tool[ $h ] ?? array( $h ) as $ability_name ) {
+							$names[] = $ability_name;
+						}
+					}
+					$names = array_values( array_unique( $names ) );
+					sort( $names );
+					$index = ltrim( $index . '; other plugins (run with godmode/call): ' . implode( ', ', $names ), '; ' );
+				}
+				$kept[ $i ]['description'] = self::with_index( (string) ( $tool['description'] ?? '' ), $index );
 			} elseif ( self::GODMODE_PREFIX . 'wp_find' === $name ) {
 				$kept[ $i ]['description'] = self::with_index( (string) ( $tool['description'] ?? '' ), self::index( $hidden['site'], 'site' ) );
 			}

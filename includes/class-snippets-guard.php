@@ -25,9 +25,10 @@
  * deliberately narrow. It acts only when Godmode is armed, only when the
  * named ability is switched on, and only on the two request paths that lead
  * to a Godmode ability: the core Abilities run route for a godmode/snippets-*
- * ability, and an MCP endpoint (Easy MCP AI or the WordPress MCP Adapter)
- * whose body is a tools/call for one. Those paths refuse unauthenticated
- * callers themselves, and on no other path is anything skipped. The worst a
+ * ability, and an MCP endpoint (Easy MCP AI, AI Engine or the WordPress MCP
+ * Adapter) whose body is a tools/call for one. The match is on the REST route
+ * WordPress will actually serve, anchored at its start. Those routes refuse
+ * unauthenticated callers themselves, and on no other route is anything skipped. The worst a
  * forged request can do is skip one snippet on a request that is then refused.
  *
  * @package AIGodmode
@@ -45,7 +46,7 @@ final class Snippets_Guard {
 	public const GUARDED = array( 'update', 'replace', 'activate', 'deactivate', 'trash', 'run', 'revert' );
 
 	/** REST path fragments that lead to an MCP server exposing abilities. */
-	public const MCP_PATHS = array( '/easy-mcp-ai/v1/mcp', '/mcp/mcp-adapter', '/mcp-adapter/' );
+	public const MCP_PATHS = array( '/easy-mcp-ai/v1/mcp', '/mcp/mcp-adapter', '/mcp-adapter/', '/mcp/v1/' );
 
 	/** Snippet id skipped in this request, 0 when none. */
 	private static int $skipped = 0;
@@ -65,11 +66,11 @@ final class Snippets_Guard {
 		if ( ! get_option( 'godmode_armed', false ) ) {
 			return;
 		}
-		$path = self::request_path();
-		if ( ! self::path_may_match( $path ) ) {
+		$route = self::request_route();
+		if ( ! self::route_is_guarded( $route ) ) {
 			return;
 		}
-		$hit = self::detect( $path, self::request_body(), $_GET ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$hit = self::detect( $route, self::request_body(), $_GET ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		if ( null === $hit ) {
 			return;
 		}
@@ -165,6 +166,55 @@ final class Snippets_Guard {
 		return false;
 	}
 
+	/**
+	 * Strict test on the REST route WordPress will serve: it must start with
+	 * one of the guarded routes. Matching anywhere in the URL let a request to
+	 * another handler (admin-ajax.php with a rest_route value, say) skip a
+	 * snippet without ever reaching a route that refuses it.
+	 */
+	public static function route_is_guarded( string $route ): bool {
+		if ( '' === $route ) {
+			return false;
+		}
+		if ( 0 === strpos( $route, '/wp-abilities/v1/abilities/godmode/snippets-' ) ) {
+			return true;
+		}
+		foreach ( self::MCP_PATHS as $fragment ) {
+			if ( 0 === strpos( $route, $fragment ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * The REST route this request will be served as, or '' when it is not a
+	 * REST request. Pure function of its inputs for the harness.
+	 *
+	 * @param string $uri        REQUEST_URI.
+	 * @param string $rest_route The rest_route query value, '' when absent.
+	 * @param string $home_path  Path part of the home URL.
+	 * @param string $prefix     REST URL prefix, normally wp-json.
+	 */
+	public static function route_from( string $uri, string $rest_route, string $home_path, string $prefix ): string {
+		$path = (string) wp_parse_url( $uri, PHP_URL_PATH );
+		// Scripts that load WordPress but never dispatch a REST route.
+		if ( preg_match( '#/(wp-admin/|wp-login\.php|xmlrpc\.php|wp-cron\.php|wp-comments-post\.php|wp-trackback\.php|wp-signup\.php|wp-activate\.php)#', $path ) ) {
+			return '';
+		}
+		if ( '' !== $rest_route ) {
+			return '/' . ltrim( $rest_route, '/' );
+		}
+		$home = rtrim( $home_path, '/' );
+		$pre  = trim( $prefix, '/' ) . '/';
+		foreach ( array( $home . '/' . $pre, $home . '/index.php/' . $pre ) as $base ) {
+			if ( 0 === strpos( $path, $base ) ) {
+				return '/' . substr( $path, strlen( $base ) );
+			}
+		}
+		return '';
+	}
+
 	/** @param mixed $id Raw id. */
 	private static function hit( string $action, $id ): ?array {
 		if ( ! in_array( $action, self::GUARDED, true ) ) {
@@ -174,13 +224,12 @@ final class Snippets_Guard {
 		return $id > 0 ? array( 'action' => $action, 'id' => $id ) : null;
 	}
 
-	private static function request_path(): string {
-		$uri = isset( $_SERVER['REQUEST_URI'] ) ? (string) wp_unslash( $_SERVER['REQUEST_URI'] ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-		$path = (string) wp_parse_url( $uri, PHP_URL_PATH );
-		if ( isset( $_GET['rest_route'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-			$path .= ' ' . (string) wp_unslash( $_GET['rest_route'] ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput, WordPress.Security.NonceVerification.Recommended -- read only to name the request in a crash record; never stored or echoed.
-		}
-		return $path;
+	private static function request_route(): string {
+		$uri  = isset( $_SERVER['REQUEST_URI'] ) ? (string) wp_unslash( $_SERVER['REQUEST_URI'] ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		$rest = isset( $_GET['rest_route'] ) && is_string( $_GET['rest_route'] ) ? (string) wp_unslash( $_GET['rest_route'] ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput, WordPress.Security.NonceVerification.Recommended -- compared only, never stored or echoed.
+		$home = (string) wp_parse_url( (string) get_option( 'home' ), PHP_URL_PATH );
+		$pre  = function_exists( 'rest_get_url_prefix' ) ? rest_get_url_prefix() : 'wp-json';
+		return self::route_from( $uri, $rest, $home, $pre );
 	}
 
 	private static function request_body(): string {

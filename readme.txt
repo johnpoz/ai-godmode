@@ -4,7 +4,7 @@ Tags: ai, mcp, abilities api, ai agents, administration
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 8.0
-Stable tag: 0.8.4
+Stable tag: 0.8.5
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -95,7 +95,7 @@ Not through the options abilities: the plugin's own settings are on the denylist
 
 = Which MCP server plugin does it need? =
 
-Any plugin that publishes WordPress Abilities as MCP tools. Easy MCP AI is the one it is tested with, and the drawer's wp-find and wp-call abilities reach Easy MCP's own tools. The WordPress MCP Adapter and other Abilities API bridges work for AI Godmode's own abilities. The tool drawer shortens the tool list of any MCP server plugin that answers through the WordPress REST layer.
+Any plugin that publishes WordPress Abilities as MCP tools. It is tested with Easy MCP AI and with AI Engine (3.8.3 or later, with Abilities turned on in its MCP settings). The drawer's wp-find and wp-call abilities reach Easy MCP's own tools; under AI Engine they are left out of the tool list and AI Engine's own tools stay listed. The WordPress MCP Adapter and other Abilities API bridges work for AI Godmode's own abilities. The tool drawer shortens the tool list of any MCP server plugin that answers through the WordPress REST layer.
 
 = Where is the code? =
 
@@ -117,6 +117,15 @@ Mutations refuse to run and return an error naming the reason. A caller that gen
 4. Measured on live sites: the tool list sent with every request fell 77 percent, and a five-task benchmark fell 54 to 60 percent with every answer correct.
 
 == Changelog ==
+
+= 0.8.5 =
+* Added: AI Engine support for the tool drawer. AI Engine (Meow Apps) names ability tools after the ability (godmode_run-php) rather than Easy MCP AI's way (wp_ability_godmode_run_php), so under AI Engine the drawer recognised nothing and hid every AI Godmode tool, the find and call doors included. The drawer now translates AI Engine's names, so the same ticks apply on either server.
+* Changed: under AI Engine, AI Engine's own tools always stay listed (nothing in the drawer can reach them), and wp-find and wp-call are left out of its list (they only work through Easy MCP AI). find's description also names any other plugin's abilities in the drawer, which call runs by ability name.
+* Changed: the Tool Drawer tab lists other plugins' published abilities on sites without Easy MCP AI, read straight from the Abilities API.
+* Changed: the Code Snippets guard recognises AI Engine's MCP route.
+* Changed: the Help tab explains how to connect through AI Engine.
+* Fixed: the Code Snippets guard now matches only the REST route WordPress will actually serve, anchored at its start. Before, a guarded fragment anywhere in the address (admin-ajax.php with a rest_route value, say) could skip one snippet for that request without it ever reaching a route that refuses unsigned-in callers.
+* Fixed: on the Tool Drawer tab, abilities with very long names can be ticked and unticked again.
 
 = 0.8.4 =
 * Changed: new README. The plugin's home is now https://github.com/johnpoz/ai-godmode, and the plugin header and readme point there. No code, setting or ability changed.

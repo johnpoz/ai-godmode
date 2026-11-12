@@ -355,9 +355,16 @@ final class Help_Admin {
 		<h3 id="mcp"><?php esc_html_e( 'This plugin does not talk to your AI by itself', 'ai-godmode' ); ?></h3>
 		<p><?php esc_html_e( 'AI Godmode registers its abilities with WordPress. Something else has to publish them to your assistant, and that something is an MCP server. Without one installed, this plugin will appear to do absolutely nothing, and that is the single most common reason people think it is broken.', 'ai-godmode' ); ?></p>
 		<p><?php
-		/* translators: %s: link to the Easy MCP AI plugin page */
-		echo wp_kses_post( sprintf( __( 'Any MCP server that reads the WordPress Abilities API will work. A free one is %s.', 'ai-godmode' ), '<a href="https://wordpress.org/plugins/easy-mcp-ai/" target="_blank" rel="noopener">Easy MCP AI</a>' ) );
+		echo wp_kses_post(
+			sprintf(
+				/* translators: 1: link to the Easy MCP AI plugin page, 2: link to the AI Engine plugin page */
+				__( 'Any MCP server that reads the WordPress Abilities API will work. Two free ones are %1$s and %2$s.', 'ai-godmode' ),
+				'<a href="https://wordpress.org/plugins/easy-mcp-ai/" target="_blank" rel="noopener">Easy MCP AI</a>',
+				'<a href="https://wordpress.org/plugins/ai-engine/" target="_blank" rel="noopener">AI Engine</a>'
+			)
+		);
 		?></p>
+		<p><?php esc_html_e( 'With Easy MCP AI, tick the abilities you want on its Tools page. With AI Engine (3.8.3 or later), open AI Engine, then MCP, and turn on Abilities; every switched-on ability here then appears as a tool named like godmode_run-php. Leave AI Engine\'s access level at Admin, because it treats an ability that does not declare itself read-only as administrator-level.', 'ai-godmode' ); ?></p>
 		<p><?php esc_html_e( 'After switching abilities on here, your AI client usually needs to refresh its list of tools before it can see them. In most clients that means reconnecting the site, and in some it means restarting the app.', 'ai-godmode' ); ?></p>
 		<?php
 		echo Admin_UI::card_close(); // phpcs:ignore WordPress.Security.EscapeOutput
@@ -371,6 +378,7 @@ final class Help_Admin {
 		<p><?php esc_html_e( 'An AI client sends the definition of every tool it holds back to the model with every request, used or not. On a site running Easy MCP AI plus this plugin that was 243 tools and about 70,000 tokens per request, measured on 2026-10-07, and most of those tools are needed once a month. So the connector lists a small core set, and the rest sit in a drawer.', 'ai-godmode' ); ?></p>
 		<p><?php esc_html_e( 'A drawer tool is not switched off. It is registered, switched and audited exactly as before; it is just absent from the list the client fetches. Four listed abilities reach it: find searches this plugin\'s abilities and returns the input schema; call runs one by name, through all of its own gates and under its own name in the audit log; wp-find and wp-call do the same for Easy MCP AI\'s own tools, running them through Easy MCP AI\'s complete pipeline. The descriptions of find and wp-find carry the names of everything currently in the drawer, so the model knows what it can ask for.', 'ai-godmode' ); ?></p>
 		<p><?php esc_html_e( 'Easy MCP AI is not modified. It serves its connector through a normal WordPress REST route, and this plugin shortens the listing on its way out using WordPress\'s own filter. Easy MCP AI\'s call path never consults the listing, so a drawer tool it runs gets every one of its checks.', 'ai-godmode' ); ?></p>
+		<p><?php esc_html_e( 'AI Engine works the same way on its HTTP route (/mcp/v1/http, the one Claude and most clients use), and the same ticks apply to it. Two differences: AI Engine\'s own tools always stay listed, because nothing in the drawer can reach them once hidden, and wp-find and wp-call are left out of its list, because they only reach Easy MCP AI\'s tools.', 'ai-godmode' ); ?></p>
 		<div class="godmode-callout warn">
 			<p><?php esc_html_e( 'What you give up: the client can no longer prompt you per tool for anything in the drawer, because to the client the drawer is one tool. The gating for drawer tools is entirely server-side: this plugin\'s switches and audit log, and Easy MCP AI\'s switches and approvals. Keep any ability you want the client to prompt you about individually in the always-loaded set.', 'ai-godmode' ); ?></p>
 		</div>

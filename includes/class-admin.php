@@ -112,7 +112,7 @@ final class Admin {
 			case 'drawer_save':
 				$tab     = 'drawer';
 				$surface = new Surface( $this->settings, $this->registrar );
-				$valid   = static function ( $n ) { return is_string( $n ) && 1 === preg_match( '/^[a-z0-9_]{1,64}$/', $n ); };
+				$valid   = static function ( $n ) { return is_string( $n ) && 1 === preg_match( '/^[a-z0-9_]{1,200}$/', $n ); };
 				$compact = ! empty( $_POST['godmode_compact'] );
 				$mode    = ! empty( $_POST['godmode_foreign_drawer'] ) ? 'drawer' : 'listed';
 				$posted  = isset( $_POST['godmode_always'] ) && is_array( $_POST['godmode_always'] ) ? array_map( 'sanitize_text_field', wp_unslash( $_POST['godmode_always'] ) ) : array();
@@ -393,7 +393,10 @@ final class Admin {
 		}
 
 		if ( ! Abilities\Wp_Find::is_available() ) {
-			return $sections;
+			// No Easy MCP registry to read (an AI Engine or MCP Adapter site):
+			// list other plugins' published abilities straight from the
+			// Abilities API, so their ticks work on any server.
+			return array_merge( $sections, $this->foreign_sections_from_abilities() );
 		}
 		try {
 			$registry = \Easy_MCP_AI\Plugin::instance()->get_tool_registry();
@@ -447,6 +450,55 @@ final class Admin {
 		foreach ( $foreign as $key => $f ) {
 			usort( $f['rows'], static function ( $a, $b ) { return strcmp( $a['tool'], $b['tool'] ); } );
 			$sections[] = array( 'key' => 'plugin-' . $key, 'label' => 'Plugin: ' . $f['label'], 'kind' => 'foreign', 'rows' => $f['rows'] );
+		}
+		return $sections;
+	}
+
+	/**
+	 * Other plugins' abilities that an MCP server would publish (meta.mcp.public
+	 * or meta.show_in_rest, the rule AI Engine and the MCP Adapter use), one
+	 * section per category, under their canonical tool names.
+	 *
+	 * @return array<int,array{key:string,label:string,kind:string,rows:array}>
+	 */
+	private function foreign_sections_from_abilities(): array {
+		if ( ! function_exists( 'wp_get_abilities' ) ) {
+			return array();
+		}
+		$foreign = array();
+		foreach ( (array) wp_get_abilities() as $key => $ability ) {
+			if ( ! is_object( $ability ) || ! method_exists( $ability, 'get_meta' ) ) {
+				continue;
+			}
+			$name = method_exists( $ability, 'get_name' ) ? (string) $ability->get_name() : (string) $key;
+			if ( '' === $name || 0 === strpos( $name, GODMODE_NAMESPACE . '/' ) ) {
+				continue;
+			}
+			$meta   = (array) $ability->get_meta();
+			$public = $meta['mcp']['public'] ?? null;
+			if ( false === $public || ( true !== $public && empty( $meta['show_in_rest'] ) ) ) {
+				continue;
+			}
+			$cat = method_exists( $ability, 'get_category' ) ? (string) $ability->get_category() : '';
+			$ns  = (string) strtok( $name, '/' );
+			$lab = '';
+			if ( '' !== $cat && function_exists( 'wp_get_ability_category' ) ) {
+				$c   = wp_get_ability_category( $cat );
+				$lab = is_object( $c ) && method_exists( $c, 'get_label' ) ? (string) $c->get_label() : '';
+			}
+			$k = '' !== $cat ? $cat : $ns;
+			$foreign[ $k ]['label']  = '' !== $lab ? $lab : ucwords( str_replace( array( '-', '_' ), ' ', $ns ) );
+			$foreign[ $k ]['rows'][] = array(
+				'tool' => Surface::tool_name_for_ability( $name ),
+				'desc' => method_exists( $ability, 'get_description' ) ? (string) $ability->get_description() : '',
+				'door' => false,
+			);
+		}
+		uasort( $foreign, static function ( $a, $b ) { return strcasecmp( $a['label'], $b['label'] ); } );
+		$sections = array();
+		foreach ( $foreign as $k => $f ) {
+			usort( $f['rows'], static function ( $a, $b ) { return strcmp( $a['tool'], $b['tool'] ); } );
+			$sections[] = array( 'key' => 'plugin-' . $k, 'label' => 'Plugin: ' . $f['label'], 'kind' => 'foreign', 'rows' => $f['rows'] );
 		}
 		return $sections;
 	}
@@ -507,7 +559,7 @@ final class Admin {
 			<?php endif; ?>
 		</p>
 		<?php if ( ! $easy_mcp ) : ?>
-			<p class="godmode-lede godmode-drawer-no-easymcp"><?php esc_html_e( 'Easy MCP AI is not active, so only this plugin\'s abilities appear here. The drawer still applies to the core abilities listing.', 'ai-godmode' ); ?></p>
+			<p class="godmode-lede godmode-drawer-no-easymcp"><?php esc_html_e( 'Easy MCP AI is not active, so this tab lists this plugin\'s abilities and the abilities other plugins publish. With AI Engine, the MCP server\'s own tools always stay listed, because nothing in the drawer can reach them; wp-find and wp-call are left out of its list because they only work through Easy MCP AI.', 'ai-godmode' ); ?></p>
 		<?php endif; ?>
 
 		<form method="post" action="<?php echo esc_url( $post_url ); ?>" style="margin-top:14px" id="godmode-drawer-form">
